@@ -13,4 +13,4 @@ fi
 cd $TP_DIR/arrow
 git fetch origin master
 
-git checkout 65f5add61829bd413aa8175ad2644cdd362d0c50
+git checkout d135974a0d3dd9a9fbbb10da4c5dbc65f9324234

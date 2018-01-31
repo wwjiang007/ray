@@ -37,14 +37,15 @@ DEFAULT_CONFIG = dict(
     return_proc_mode="centered_rank",
     num_workers=10,
     stepsize=0.01,
-    observation_filter="MeanStdFilter")
+    observation_filter="MeanStdFilter",
+    noise_size=250000000,
+    env_config={})
 
 
 @ray.remote
-def create_shared_noise():
+def create_shared_noise(count):
     """Create a large array of noise to be shared by all workers."""
     seed = 123
-    count = 250000000
     noise = np.random.RandomState(seed).randn(count).astype(np.float32)
     return noise
 
@@ -70,7 +71,7 @@ class Worker(object):
         self.policy_params = policy_params
         self.noise = SharedNoiseTable(noise)
 
-        self.env = env_creator()
+        self.env = env_creator(config["env_config"])
         self.preprocessor = ModelCatalog.get_preprocessor(registry, self.env)
 
         self.sess = utils.make_session(single_threaded=True)
@@ -135,13 +136,14 @@ class Worker(object):
 class ESAgent(Agent):
     _agent_name = "ES"
     _default_config = DEFAULT_CONFIG
+    _allow_unknown_subkeys = ["env_config"]
 
     def _init(self):
         policy_params = {
             "action_noise_std": 0.01
         }
 
-        env = self.env_creator()
+        env = self.env_creator(self.config["env_config"])
         preprocessor = ModelCatalog.get_preprocessor(self.registry, env)
 
         self.sess = utils.make_session(single_threaded=False)
@@ -152,7 +154,7 @@ class ESAgent(Agent):
 
         # Create the shared noise table.
         print("Creating shared noise table.")
-        noise_id = create_shared_noise.remote()
+        noise_id = create_shared_noise.remote(self.config["noise_size"])
         self.noise = SharedNoiseTable(ray.get(noise_id))
 
         # Create the actors.
@@ -298,9 +300,9 @@ class ESAgent(Agent):
 
         return result
 
-    def _save(self):
+    def _save(self, checkpoint_dir):
         checkpoint_path = os.path.join(
-            self.logdir, "checkpoint-{}".format(self.iteration))
+            checkpoint_dir, "checkpoint-{}".format(self.iteration))
         weights = self.policy.get_weights()
         objects = [
             weights,

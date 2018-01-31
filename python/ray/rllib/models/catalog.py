@@ -3,17 +3,19 @@ from __future__ import division
 from __future__ import print_function
 
 import gym
+import numpy as np
+import tensorflow as tf
+from functools import partial
 
 from ray.tune.registry import RLLIB_MODEL, RLLIB_PREPROCESSOR, \
     _default_registry
 
 from ray.rllib.models.action_dist import (
-    Categorical, Deterministic, DiagGaussian)
-from ray.rllib.models.preprocessors import (
-    NoPreprocessor, AtariRamPreprocessor, AtariPixelPreprocessor,
-    OneHotPreprocessor)
+    Categorical, Deterministic, DiagGaussian, MultiActionDistribution)
+from ray.rllib.models.preprocessors import get_preprocessor
 from ray.rllib.models.fcnet import FullyConnectedNetwork
 from ray.rllib.models.visionnet import VisionNetwork
+from ray.rllib.models.multiagentfcnet import MultiAgentFullyConnectedNetwork
 
 
 MODEL_CONFIGS = [
@@ -36,10 +38,17 @@ MODEL_CONFIGS = [
 
 
 class ModelCatalog(object):
-    """Registry of default models and action distributions for envs."""
+    """Registry of models, preprocessors, and action distributions for envs.
 
-    ATARI_OBS_SHAPE = (210, 160, 3)
-    ATARI_RAM_OBS_SHAPE = (128,)
+    Examples:
+        >>> prep = ModelCatalog.get_preprocessor(env)
+        >>> observation = prep.transform(raw_observation)
+
+        >>> dist_cls, dist_dim = ModelCatalog.get_action_dist(env.action_space)
+        >>> model = ModelCatalog.get_model(registry, inputs, dist_dim)
+        >>> dist = dist_cls(model.outputs)
+        >>> action = dist.sample()
+    """
 
     @staticmethod
     def get_action_dist(action_space, dist_type=None):
@@ -54,6 +63,10 @@ class ModelCatalog(object):
             dist_dim (int): The size of the input vector to the distribution.
         """
 
+        # TODO(ekl) are list spaces valid?
+        if isinstance(action_space, list):
+            action_space = gym.spaces.Tuple(action_space)
+
         if isinstance(action_space, gym.spaces.Box):
             if dist_type is None:
                 return DiagGaussian, action_space.shape[0] * 2
@@ -61,9 +74,53 @@ class ModelCatalog(object):
                 return Deterministic, action_space.shape[0]
         elif isinstance(action_space, gym.spaces.Discrete):
             return Categorical, action_space.n
+        elif isinstance(action_space, gym.spaces.Tuple):
+            size = 0
+            child_dist = []
+            for action in action_space.spaces:
+                dist, action_size = ModelCatalog.get_action_dist(action)
+                child_dist.append(dist)
+                size += action_size
+            return partial(MultiActionDistribution,
+                           child_distributions=child_dist,
+                           action_space=action_space), size
 
         raise NotImplementedError(
             "Unsupported args: {} {}".format(action_space, dist_type))
+
+    @staticmethod
+    def get_action_placeholder(action_space):
+        """Returns an action placeholder that is consistent with the action space
+
+        Args:
+            action_space (Space): Action space of the target gym env.
+        Returns:
+            action_placeholder (Tensor): A placeholder for the actions
+        """
+
+        # TODO(ekl) are list spaces valid?
+        if isinstance(action_space, list):
+            action_space = gym.spaces.Tuple(action_space)
+
+        if isinstance(action_space, gym.spaces.Box):
+            return tf.placeholder(
+                tf.float32, shape=(None, action_space.shape[0]))
+        elif isinstance(action_space, gym.spaces.Discrete):
+            return tf.placeholder(tf.int64, shape=(None,))
+        elif isinstance(action_space, gym.spaces.Tuple):
+            size = 0
+            all_discrete = True
+            for i in range(len(action_space.spaces)):
+                if isinstance(action_space.spaces[i], gym.spaces.Discrete):
+                    size += 1
+                else:
+                    all_discrete = False
+                    size += np.product(action_space.spaces[i].shape)
+            return tf.placeholder(
+                tf.int64 if all_discrete else tf.float32, shape=(None, size))
+        else:
+            raise NotImplementedError("action space {}"
+                                      " not supported".format(action_space))
 
     @staticmethod
     def get_model(registry, inputs, num_outputs, options=dict()):
@@ -86,6 +143,12 @@ class ModelCatalog(object):
                 inputs, num_outputs, options)
 
         obs_rank = len(inputs.shape) - 1
+
+        # num_outputs > 1 used to avoid hitting this with the value function
+        if isinstance(options.get("custom_options", {}).get(
+          "multiagent_fcnet_hiddens", 1), list) and num_outputs > 1:
+            return MultiAgentFullyConnectedNetwork(inputs,
+                                                   num_outputs, options)
 
         if obs_rank > 1:
             return VisionNetwork(inputs, num_outputs, options)
@@ -136,21 +199,11 @@ class ModelCatalog(object):
         Returns:
             preprocessor (Preprocessor): Preprocessor for the env observations.
         """
-
-        # For older gym versions that don't set shape for Discrete
-        if not hasattr(env.observation_space, "shape") and \
-                isinstance(env.observation_space, gym.spaces.Discrete):
-            env.observation_space.shape = ()
-
-        obs_shape = env.observation_space.shape
-
         for k in options.keys():
             if k not in MODEL_CONFIGS:
                 raise Exception(
                     "Unknown config key `{}`, all keys: {}".format(
                         k, MODEL_CONFIGS))
-
-        print("Observation shape is {}".format(obs_shape))
 
         if "custom_preprocessor" in options:
             preprocessor = options["custom_preprocessor"]
@@ -158,19 +211,7 @@ class ModelCatalog(object):
             return registry.get(RLLIB_PREPROCESSOR, preprocessor)(
                 env.observation_space, options)
 
-        if obs_shape == ():
-            print("Using one-hot preprocessor for discrete envs.")
-            preprocessor = OneHotPreprocessor
-        elif obs_shape == ModelCatalog.ATARI_OBS_SHAPE:
-            print("Assuming Atari pixel env, using AtariPixelPreprocessor.")
-            preprocessor = AtariPixelPreprocessor
-        elif obs_shape == ModelCatalog.ATARI_RAM_OBS_SHAPE:
-            print("Assuming Atari ram env, using AtariRamPreprocessor.")
-            preprocessor = AtariRamPreprocessor
-        else:
-            print("Not using any observation preprocessor.")
-            preprocessor = NoPreprocessor
-
+        preprocessor = get_preprocessor(env.observation_space)
         return preprocessor(env.observation_space, options)
 
     @staticmethod

@@ -5,13 +5,13 @@ from __future__ import print_function
 import binascii
 from collections import namedtuple, OrderedDict
 from datetime import datetime
-import cloudpickle
 import json
 import os
 import psutil
 import pyarrow
 import random
 import redis
+import resource
 import shutil
 import signal
 import socket
@@ -295,25 +295,22 @@ def _autodetect_num_gpus():
 
 
 def _compute_version_info():
-    """Compute the versions of Python, cloudpickle, pyarrow, and Ray.
+    """Compute the versions of Python, pyarrow, and Ray.
 
     Returns:
         A tuple containing the version information.
     """
     ray_version = ray.__version__
-    ray_location = os.path.abspath(ray.__file__)
     python_version = ".".join(map(str, sys.version_info[:3]))
-    cloudpickle_version = cloudpickle.__version__
     pyarrow_version = pyarrow.__version__
-    return (ray_version, ray_location, python_version, cloudpickle_version,
-            pyarrow_version)
+    return (ray_version, python_version, pyarrow_version)
 
 
 def _put_version_info_in_redis(redis_client):
     """Store version information in Redis.
 
     This will be used to detect if workers or drivers are started using
-    different versions of Python, cloudpickle, pyarrow, or Ray.
+    different versions of Python, pyarrow, or Ray.
 
     Args:
         redis_client: A client for the primary Redis shard.
@@ -325,7 +322,7 @@ def check_version_info(redis_client):
     """Check if various version info of this process is correct.
 
     This will be used to detect if workers or drivers are started using
-    different versions of Python, cloudpickle, pyarrow, or Ray. If the version
+    different versions of Python, pyarrow, or Ray. If the version
     information is not present in Redis, then no check is done.
 
     Args:
@@ -345,19 +342,19 @@ def check_version_info(redis_client):
     version_info = _compute_version_info()
     if version_info != true_version_info:
         node_ip_address = ray.services.get_node_ip_address()
-        raise Exception("Version mismatch: The cluster was started with:\n"
-                        "    Ray: " + true_version_info[0] + "\n"
-                        "    Ray location: " + true_version_info[1] + "\n"
-                        "    Python: " + true_version_info[2] + "\n"
-                        "    Cloudpickle: " + true_version_info[3] + "\n"
-                        "    Pyarrow: " + str(true_version_info[4]) + "\n"
-                        "This process on node " + node_ip_address +
-                        " was started with:" + "\n"
-                        "    Ray: " + version_info[0] + "\n"
-                        "    Ray location: " + version_info[1] + "\n"
-                        "    Python: " + version_info[2] + "\n"
-                        "    Cloudpickle: " + version_info[3] + "\n"
-                        "    Pyarrow: " + str(version_info[4]))
+        error_message = ("Version mismatch: The cluster was started with:\n"
+                         "    Ray: " + true_version_info[0] + "\n"
+                         "    Python: " + true_version_info[1] + "\n"
+                         "    Pyarrow: " + str(true_version_info[2]) + "\n"
+                         "This process on node " + node_ip_address +
+                         " was started with:" + "\n"
+                         "    Ray: " + version_info[0] + "\n"
+                         "    Python: " + version_info[1] + "\n"
+                         "    Pyarrow: " + str(version_info[2]))
+        if version_info[:2] != true_version_info[:2]:
+            raise Exception(error_message)
+        else:
+            print(error_message)
 
 
 def start_redis(node_ip_address,
@@ -395,6 +392,7 @@ def start_redis(node_ip_address,
     """
     redis_stdout_file, redis_stderr_file = new_log_files(
         "redis", redirect_output)
+
     assigned_port, _ = start_redis_instance(
         node_ip_address=node_ip_address, port=port,
         redis_max_clients=redis_max_clients,
@@ -517,6 +515,23 @@ def start_redis_instance(node_ip_address="127.0.0.1",
     # number of Redis clients.
     if redis_max_clients is not None:
         redis_client.config_set("maxclients", str(redis_max_clients))
+    else:
+        # If redis_max_clients is not provided, determine the current ulimit.
+        # We will use this to attempt to raise the maximum number of Redis
+        # clients.
+        current_max_clients = int(
+            redis_client.config_get("maxclients")["maxclients"])
+        # The below command should be the same as doing ulimit -n.
+        ulimit_n = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+        # The quantity redis_client_buffer appears to be the required buffer
+        # between the maximum number of redis clients and ulimit -n. That is,
+        # if ulimit -n returns 10000, then we can set maxclients to
+        # 10000 - redis_client_buffer.
+        redis_client_buffer = 32
+        if current_max_clients < ulimit_n - redis_client_buffer:
+            redis_client.config_set("maxclients",
+                                    ulimit_n - redis_client_buffer)
+
     # Increase the hard and soft limits for the redis client pubsub buffer to
     # 128MB. This is a hack to make it less likely for pubsub messages to be
     # dropped and for pubsub connections to therefore be killed.
@@ -554,7 +569,7 @@ def start_log_monitor(redis_address, node_ip_address, stdout_file=None,
     log_monitor_filepath = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "log_monitor.py")
-    p = subprocess.Popen([sys.executable, log_monitor_filepath,
+    p = subprocess.Popen([sys.executable, "-u", log_monitor_filepath,
                           "--redis-address", redis_address,
                           "--node-ip-address", node_ip_address],
                          stdout=stdout_file, stderr=stderr_file)
@@ -850,6 +865,7 @@ def start_worker(node_ip_address, object_store_name, object_store_manager_name,
             default.
     """
     command = [sys.executable,
+               "-u",
                worker_path,
                "--node-ip-address=" + node_ip_address,
                "--object-store-name=" + object_store_name,
@@ -884,6 +900,7 @@ def start_monitor(redis_address, node_ip_address, stdout_file=None,
     monitor_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "monitor.py")
     command = [sys.executable,
+               "-u",
                monitor_path,
                "--redis-address=" + str(redis_address)]
     if autoscaling_config:
@@ -1347,6 +1364,7 @@ def new_log_files(name, redirect_output):
     date_str = datetime.today().strftime("%Y-%m-%d_%H-%M-%S")
     log_stdout = "{}/{}-{}-{:05d}.out".format(logs_dir, name, date_str, log_id)
     log_stderr = "{}/{}-{}-{:05d}.err".format(logs_dir, name, date_str, log_id)
-    log_stdout_file = open(log_stdout, "a")
-    log_stderr_file = open(log_stderr, "a")
+    # Line-buffer the output (mode 1)
+    log_stdout_file = open(log_stdout, "a", buffering=1)
+    log_stderr_file = open(log_stderr, "a", buffering=1)
     return log_stdout_file, log_stderr_file
