@@ -11,7 +11,7 @@ from tensorflow.python import debug as tf_debug
 import numpy as np
 
 import ray
-from ray.rllib.optimizers import Evaluator, SampleBatch
+from ray.rllib.optimizers import PolicyEvaluator, SampleBatch
 from ray.rllib.optimizers.multi_gpu_impl import LocalSyncParallelOptimizer
 from ray.rllib.models import ModelCatalog
 from ray.rllib.utils.sampler import SyncSampler
@@ -21,7 +21,7 @@ from ray.rllib.ppo.loss import ProximalPolicyLoss
 
 
 # TODO(rliaw): Move this onto LocalMultiGPUOptimizer
-class PPOEvaluator(Evaluator):
+class PPOEvaluator(PolicyEvaluator):
     """
     Runner class that holds the simulator environment and the policy.
 
@@ -76,13 +76,13 @@ class PPOEvaluator(Evaluator):
         # Value function predictions before the policy update.
         self.prev_vf_preds = tf.placeholder(tf.float32, shape=(None,))
 
-        assert config["sgd_batchsize"] % len(devices) == 0, \
-            "Batch size must be evenly divisible by devices"
         if is_remote:
             self.batch_size = config["rollout_batchsize"]
             self.per_device_batch_size = config["rollout_batchsize"]
         else:
-            self.batch_size = config["sgd_batchsize"]
+            self.batch_size = int(
+                config["sgd_batchsize"] / len(devices)) * len(devices)
+            assert self.batch_size % len(devices) == 0
             self.per_device_batch_size = int(self.batch_size / len(devices))
 
         def build_loss(obs, vtargets, advs, acts, plog, pvf_preds):
@@ -139,7 +139,7 @@ class PPOEvaluator(Evaluator):
         dummy = np.zeros_like(trajectories["advantages"])
         return self.par_opt.load_data(
             self.sess,
-            [trajectories["observations"],
+            [trajectories["obs"],
              trajectories["value_targets"] if use_gae else dummy,
              trajectories["advantages"],
              trajectories["actions"],

@@ -26,20 +26,21 @@ class LogMonitor(object):
         log_file_handles: A dictionary mapping the name of a log file to a file
             handle for that file.
     """
+
     def __init__(self, redis_ip_address, redis_port, node_ip_address):
         """Initialize the log monitor object."""
         self.node_ip_address = node_ip_address
-        self.redis_client = redis.StrictRedis(host=redis_ip_address,
-                                              port=redis_port)
+        self.redis_client = redis.StrictRedis(
+            host=redis_ip_address, port=redis_port)
         self.log_files = {}
         self.log_file_handles = {}
+        self.files_to_ignore = set()
 
     def update_log_filenames(self):
         """Get the most up-to-date list of log files to monitor from Redis."""
         num_current_log_files = len(self.log_files)
-        new_log_filenames = self.redis_client.lrange(
-            "LOG_FILENAMES:{}".format(self.node_ip_address),
-            num_current_log_files, -1)
+        new_log_filenames = self.redis_client.lrange("LOG_FILENAMES:{}".format(
+            self.node_ip_address), num_current_log_files, -1)
         for log_filename in new_log_filenames:
             print("Beginning to track file {}".format(log_filename))
             assert log_filename not in self.log_files
@@ -69,19 +70,28 @@ class LogMonitor(object):
                     redis_key = "LOGFILE:{}:{}".format(
                         self.node_ip_address, log_filename.decode("ascii"))
                     self.redis_client.rpush(redis_key, *new_lines)
+
+            # Pass if we already failed to open the log file.
+            elif log_filename in self.files_to_ignore:
+                pass
+
+            # Try to open this file for the first time.
             else:
                 try:
-                    self.log_file_handles[log_filename] = open(log_filename,
-                                                               "r")
+                    self.log_file_handles[log_filename] = open(
+                        log_filename, "r")
                 except IOError as e:
                     if e.errno == os.errno.EMFILE:
-                        print("Warning: Some files are not being logged "
-                              "because there are too many open files.")
+                        print("Warning: Ignoring {} because there are too "
+                              "many open files.".format(log_filename))
                     elif e.errno == os.errno.ENOENT:
                         print("Warning: The file {} was not "
                               "found.".format(log_filename))
                     else:
                         raise e
+
+                    # Don't try to open this file any more.
+                    self.files_to_ignore.add(log_filename)
 
     def run(self):
         """Run the log monitor.
@@ -96,13 +106,20 @@ class LogMonitor(object):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=("Parse Redis server for the "
-                                                  "log monitor to connect "
-                                                  "to."))
-    parser.add_argument("--redis-address", required=True, type=str,
-                        help="The address to use for Redis.")
-    parser.add_argument("--node-ip-address", required=True, type=str,
-                        help="The IP address of the node this process is on.")
+    parser = argparse.ArgumentParser(
+        description=("Parse Redis server for the "
+                     "log monitor to connect "
+                     "to."))
+    parser.add_argument(
+        "--redis-address",
+        required=True,
+        type=str,
+        help="The address to use for Redis.")
+    parser.add_argument(
+        "--node-ip-address",
+        required=True,
+        type=str,
+        help="The IP address of the node this process is on.")
     args = parser.parse_args()
 
     redis_ip_address = get_ip_address(args.redis_address)

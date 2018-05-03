@@ -5,6 +5,7 @@
 #include "common/state/table.h"
 #include "common/state/db.h"
 #include "plasma/client.h"
+#include "ray/gcs/client.h"
 
 #include <list>
 #include <unordered_map>
@@ -47,18 +48,20 @@ struct LocalSchedulerState {
   std::list<LocalSchedulerClient *> workers;
   /** A set of driver IDs corresponding to drivers that have been removed. This
    *  is used to make sure we don't execute any tasks belong to dead drivers. */
-  std::unordered_set<WorkerID, UniqueIDHasher> removed_drivers;
+  std::unordered_set<WorkerID> removed_drivers;
   /** A set of actors IDs corresponding to local actors that have been removed.
    * This ensures we can reject any tasks destined for dead actors. */
-  std::unordered_set<ActorID, UniqueIDHasher> removed_actors;
+  std::unordered_set<ActorID> removed_actors;
   /** List of the process IDs for child processes (workers) started by the
    *  local scheduler that have not sent a REGISTER_PID message yet. */
   std::vector<pid_t> child_pids;
   /** A hash table mapping actor IDs to the db_client_id of the local scheduler
    *  that is responsible for the actor. */
-  std::unordered_map<ActorID, ActorMapEntry, UniqueIDHasher> actor_mapping;
+  std::unordered_map<ActorID, ActorMapEntry> actor_mapping;
   /** The handle to the database. */
   DBHandle *db;
+  /** The handle to the GCS (modern version of the above). */
+  ray::gcs::AsyncGcsClient gcs_client;
   /** The Plasma client. */
   plasma::PlasmaClient *plasma_conn;
   /** State for the scheduling algorithm. */

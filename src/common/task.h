@@ -18,10 +18,10 @@ typedef char TaskSpec;
 class TaskExecutionSpec {
  public:
   TaskExecutionSpec(const std::vector<ObjectID> &execution_dependencies,
-                    TaskSpec *spec,
+                    const TaskSpec *spec,
                     int64_t task_spec_size);
   TaskExecutionSpec(const std::vector<ObjectID> &execution_dependencies,
-                    TaskSpec *spec,
+                    const TaskSpec *spec,
                     int64_t task_spec_size,
                     int spillback_count);
   TaskExecutionSpec(TaskExecutionSpec *execution_spec);
@@ -30,7 +30,7 @@ class TaskExecutionSpec {
   ///
   /// @return A vector of object IDs representing this task's execution
   ///         dependencies.
-  std::vector<ObjectID> ExecutionDependencies();
+  std::vector<ObjectID> ExecutionDependencies() const;
 
   /// Set the task's execution dependencies.
   ///
@@ -70,33 +70,33 @@ class TaskExecutionSpec {
   /// Get the task spec.
   ///
   /// @return A pointer to the immutable task spec.
-  TaskSpec *Spec();
+  TaskSpec *Spec() const;
 
   /// Get the number of dependencies. This comprises the immutable task
   /// arguments and the mutable execution dependencies.
   ///
   /// @return The number of dependencies.
-  int64_t NumDependencies();
+  int64_t NumDependencies() const;
 
   /// Get the number of object IDs at the given dependency index.
   ///
   /// @param dependency_index The dependency index whose object IDs to count.
   /// @return The number of object IDs at the given dependency_index.
-  int DependencyIdCount(int64_t dependency_index);
+  int DependencyIdCount(int64_t dependency_index) const;
 
   /// Get the object ID of a given dependency index.
   ///
   /// @param dependency_index The index at which we should look up the object
   ///        ID.
   /// @param id_index The index of the object ID.
-  ObjectID DependencyId(int64_t dependency_index, int64_t id_index);
+  ObjectID DependencyId(int64_t dependency_index, int64_t id_index) const;
 
   /// Compute whether the task is dependent on an object ID.
   ///
   /// @param object_id The object ID that the task may be dependent on.
   /// @return bool This returns true if the task is dependent on the given
   ///         object ID and false otherwise.
-  bool DependsOn(ObjectID object_id);
+  bool DependsOn(ObjectID object_id) const;
 
   /// Returns whether the given dependency index is a static dependency (an
   /// argument of the immutable task).
@@ -104,7 +104,7 @@ class TaskExecutionSpec {
   /// @param dependency_index The requested dependency index.
   /// @return bool This returns true if the requested dependency index is
   ///         immutable (an argument of the task).
-  bool IsStaticDependency(int64_t dependency_index);
+  bool IsStaticDependency(int64_t dependency_index) const;
 
  private:
   /** A list of object IDs representing this task's dependencies at execution
@@ -190,6 +190,9 @@ void free_task_builder(TaskBuilder *builder);
  * @param parent_task_id The task ID of the task that submitted this task.
  * @param parent_counter A counter indicating how many tasks were submitted by
  *        the parent task prior to this one.
+ * @param actor_creation_id The actor creation ID of this task.
+ * @param actor_creation_dummy_object_id The dummy object for the corresponding
+ *        actor creation task, assuming this is an actor method.
  * @param actor_id The ID of the actor that this task is for. If it is not an
  *        actor task, then this if NIL_ACTOR_ID.
  * @param actor_handle_id The ID of the actor handle that this task was
@@ -210,8 +213,10 @@ void TaskSpec_start_construct(TaskBuilder *B,
                               UniqueID driver_id,
                               TaskID parent_task_id,
                               int64_t parent_counter,
-                              UniqueID actor_id,
-                              UniqueID actor_handle_id,
+                              ActorID actor_creation_id,
+                              ObjectID actor_creation_dummy_object_id,
+                              ActorID actor_id,
+                              ActorHandleID actor_handle_id,
                               int64_t actor_counter,
                               bool is_actor_checkpoint_method,
                               FunctionID function_id,
@@ -241,7 +246,7 @@ FunctionID TaskSpec_function(TaskSpec *spec);
  * @param spec The task_spec in question.
  * @return The actor ID of the actor the task is part of.
  */
-UniqueID TaskSpec_actor_id(TaskSpec *spec);
+ActorID TaskSpec_actor_id(TaskSpec *spec);
 
 /**
  * Return the actor handle ID of the task.
@@ -249,7 +254,7 @@ UniqueID TaskSpec_actor_id(TaskSpec *spec);
  * @param spec The task_spec in question.
  * @return The ID of the actor handle that the task was submitted through.
  */
-UniqueID TaskSpec_actor_handle_id(TaskSpec *spec);
+ActorID TaskSpec_actor_handle_id(TaskSpec *spec);
 
 /**
  * Return whether this task is for an actor.
@@ -258,6 +263,26 @@ UniqueID TaskSpec_actor_handle_id(TaskSpec *spec);
  * @return Whether the task is for an actor.
  */
 bool TaskSpec_is_actor_task(TaskSpec *spec);
+
+/// Return whether this task is an actor creation task or not.
+///
+/// \param spec The task_spec in question.
+/// \return True if this task is an actor creation task and false otherwise.
+bool TaskSpec_is_actor_creation_task(TaskSpec *spec);
+
+/// Return the actor creation ID of the task. The task must be an actor creation
+/// task.
+///
+/// \param spec The task_spec in question.
+/// \return The actor creation ID if this is an actor creation task.
+ActorID TaskSpec_actor_creation_id(TaskSpec *spec);
+
+/// Return the actor creation dummy object ID of the task. The task must be an
+/// actor task.
+///
+/// \param spec The task_spec in question.
+/// \return The actor creation dummy object ID corresponding to this actor task.
+ObjectID TaskSpec_actor_creation_dummy_object_id(TaskSpec *spec);
 
 /**
  * Return the actor counter of the task. This starts at 0 and increments by 1
@@ -508,7 +533,10 @@ typedef enum {
   /** The task was not able to finish. */
   TASK_STATUS_LOST = 32,
   /** The task will be submitted for reexecution. */
-  TASK_STATUS_RECONSTRUCTING = 64
+  TASK_STATUS_RECONSTRUCTING = 64,
+  /** An actor task is cached at a local scheduler and is waiting for the
+   *  corresponding actor to be created. */
+  TASK_STATUS_ACTOR_CACHED = 128
 } scheduling_state;
 
 /** A task is an execution of a task specification.  It has a state of execution
@@ -532,7 +560,7 @@ struct Task {
  * @param local_scheduler_id The ID of the local scheduler that the task is
  *        scheduled on, if any.
  */
-Task *Task_alloc(TaskSpec *spec,
+Task *Task_alloc(const TaskSpec *spec,
                  int64_t task_spec_size,
                  int state,
                  DBClientID local_scheduler_id,

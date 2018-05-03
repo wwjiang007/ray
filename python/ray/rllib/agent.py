@@ -4,11 +4,12 @@ from __future__ import print_function
 
 import logging
 import numpy as np
+import json
 import os
 import pickle
 
 import tensorflow as tf
-from ray.tune.registry import ENV_CREATOR, get_registry
+from ray.tune.registry import ENV_CREATOR
 from ray.tune.result import TrainingResult
 from ray.tune.trainable import Trainable
 
@@ -62,8 +63,16 @@ class Agent(Trainable):
     _allow_unknown_configs = False
     _allow_unknown_subkeys = []
 
+    @classmethod
+    def resource_help(cls, config):
+        return (
+            "\n\nYou can adjust the resource requests of RLlib agents by "
+            "setting `num_workers` and other configs. See the "
+            "DEFAULT_CONFIG defined by each agent for more info.\n\n"
+            "The config of this agent is: " + json.dumps(config))
+
     def __init__(
-            self, config={}, env=None, registry=get_registry(),
+            self, config=None, env=None, registry=None,
             logger_creator=None):
         """Initialize an RLLib agent.
 
@@ -76,6 +85,8 @@ class Agent(Trainable):
             logger_creator (func): Function that creates a ray.tune.Logger
                 object. If unspecified, a default logger is created.
         """
+
+        config = config or {}
 
         # Agents allow env ids to be passed directly to the constructor.
         self._env_id = env or config.get("env")
@@ -137,12 +148,19 @@ class _MockAgent(Agent):
     """Mock agent for use in tests"""
 
     _agent_name = "MockAgent"
-    _default_config = {}
+    _default_config = {
+        "mock_error": False,
+        "persistent_error": False,
+    }
 
     def _init(self):
         self.info = None
+        self.restored = False
 
     def _train(self):
+        if self.config["mock_error"] and self.iteration == 1 \
+                and (self.config["persistent_error"] or not self.restored):
+            raise Exception("mock error")
         return TrainingResult(
             episode_reward_mean=10, episode_len_mean=10,
             timesteps_this_iter=10, info={})
@@ -157,6 +175,7 @@ class _MockAgent(Agent):
         with open(checkpoint_path, 'rb') as f:
             info = pickle.load(f)
         self.info = info
+        self.restored = True
 
     def set_info(self, info):
         self.info = info
@@ -210,9 +229,18 @@ class _ParameterTuningAgent(_MockAgent):
 
 
 def get_agent_class(alg):
-    """Returns the class of an known agent given its name."""
+    """Returns the class of a known agent given its name."""
 
-    if alg == "PPO":
+    if alg == "DDPG2":
+        from ray.rllib import ddpg2
+        return ddpg2.DDPG2Agent
+    elif alg == "DDPG":
+        from ray.rllib import ddpg
+        return ddpg.DDPGAgent
+    elif alg == "APEX_DDPG":
+        from ray.rllib import ddpg
+        return ddpg.ApexDDPGAgent
+    elif alg == "PPO":
         from ray.rllib import ppo
         return ppo.PPOAgent
     elif alg == "ES":
@@ -221,12 +249,18 @@ def get_agent_class(alg):
     elif alg == "DQN":
         from ray.rllib import dqn
         return dqn.DQNAgent
+    elif alg == "APEX":
+        from ray.rllib import dqn
+        return dqn.ApexAgent
     elif alg == "A3C":
         from ray.rllib import a3c
         return a3c.A3CAgent
     elif alg == "BC":
         from ray.rllib import bc
         return bc.BCAgent
+    elif alg == "PG":
+        from ray.rllib import pg
+        return pg.PGAgent
     elif alg == "script":
         from ray.tune import script_runner
         return script_runner.ScriptRunner

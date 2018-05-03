@@ -13,9 +13,11 @@ import tempfile
 import time
 import uuid
 
+import ray
 from ray.tune import TuneError
 from ray.tune.logger import UnifiedLogger
 from ray.tune.result import DEFAULT_RESULTS_DIR
+from ray.tune.trial import Resources
 
 
 class Trainable(object):
@@ -48,7 +50,7 @@ class Trainable(object):
             classes and objects by name.
     """
 
-    def __init__(self, config={}, registry=None, logger_creator=None):
+    def __init__(self, config=None, registry=None, logger_creator=None):
         """Initialize an Trainable.
 
         Subclasses should prefer defining ``_setup()`` instead of overriding
@@ -68,7 +70,7 @@ class Trainable(object):
 
         self._initialize_ok = False
         self._experiment_id = uuid.uuid4().hex
-        self.config = config
+        self.config = config or {}
         self.registry = registry
 
         if logger_creator:
@@ -87,6 +89,23 @@ class Trainable(object):
         self._timesteps_total = 0
         self._setup()
         self._initialize_ok = True
+        self._local_ip = ray.services.get_node_ip_address()
+
+    @classmethod
+    def default_resource_request(cls, config):
+        """Returns the resource requirement for the given configuration.
+
+        This can be overriden by sub-classes to set the correct trial resource
+        allocation, so the user does not need to.
+        """
+
+        return Resources(cpu=1, gpu=0)
+
+    @classmethod
+    def resource_help(cls, config):
+        """Returns a help string for configuring this trainable's resources."""
+
+        return ""
 
     def train(self):
         """Runs one logical iteration of training.
@@ -112,8 +131,8 @@ class Trainable(object):
             time_this_iter = time.time() - start
 
         if result.timesteps_this_iter is None:
-            raise TuneError(
-                "Must specify timesteps_this_iter in result", result)
+            raise TuneError("Must specify timesteps_this_iter in result",
+                            result)
 
         self._time_total += time_this_iter
         self._timesteps_total += result.timesteps_this_iter
@@ -135,7 +154,9 @@ class Trainable(object):
             time_total_s=self._time_total,
             neg_mean_loss=neg_loss,
             pid=os.getpid(),
-            hostname=os.uname()[1])
+            hostname=os.uname()[1],
+            node_ip=self._local_ip,
+            config=self.config)
 
         self._result_logger.on_result(result)
 
@@ -155,10 +176,10 @@ class Trainable(object):
         """
 
         checkpoint_path = self._save(checkpoint_dir or self.logdir)
-        pickle.dump(
-            [self._experiment_id, self._iteration, self._timesteps_total,
-             self._time_total],
-            open(checkpoint_path + ".tune_metadata", "wb"))
+        pickle.dump([
+            self._experiment_id, self._iteration, self._timesteps_total,
+            self._time_total
+        ], open(checkpoint_path + ".tune_metadata", "wb"))
         return checkpoint_path
 
     def save_to_object(self):
@@ -182,11 +203,13 @@ class Trainable(object):
         out = io.BytesIO()
         with gzip.GzipFile(fileobj=out, mode="wb") as f:
             compressed = pickle.dumps({
-                "checkpoint_name": os.path.basename(checkpoint_prefix),
-                "data": data,
+                "checkpoint_name":
+                os.path.basename(checkpoint_prefix),
+                "data":
+                data,
             })
-            print("Saving checkpoint to object store, {} bytes".format(
-                len(compressed)))
+            if len(compressed) > 10e6:  # getting pretty large
+                print("Checkpoint size is {} bytes".format(len(compressed)))
             f.write(compressed)
 
         shutil.rmtree(tmpdir)

@@ -46,13 +46,9 @@ void assign_task_to_worker(LocalSchedulerState *state,
  *
  * @param state The local scheduler state.
  * @param worker The worker that finished the task.
- * @param actor_checkpoint_failed If the last task assigned was a checkpoint
- *        task that failed.
  * @return Void.
  */
-void finish_task(LocalSchedulerState *state,
-                 LocalSchedulerClient *worker,
-                 bool actor_checkpoint_failed);
+void finish_task(LocalSchedulerState *state, LocalSchedulerClient *worker);
 
 /**
  * This is the callback that is used to process a notification from the Plasma
@@ -108,15 +104,9 @@ void kill_worker(LocalSchedulerState *state,
  * scheduler.
  *
  * @param state The local scheduler state.
- * @param actor_id The ID of the actor for this worker. If this worker is not an
- *        actor, then NIL_ACTOR_ID should be used.
- * @param reconstruct True if the worker is an actor and is being started in
- *        reconstruct mode.
  * @param Void.
  */
-void start_worker(LocalSchedulerState *state,
-                  ActorID actor_id,
-                  bool reconstruct);
+void start_worker(LocalSchedulerState *state);
 
 /**
  * Check if a certain quantity of dynamic resources are available. If num_cpus
