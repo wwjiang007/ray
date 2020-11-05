@@ -19,17 +19,16 @@ import tensorflow as tf
 from tensorflow.python.keras.datasets import cifar10
 from tensorflow.python.keras.layers import Input, Dense, Dropout, Flatten
 from tensorflow.python.keras.layers import Convolution2D, MaxPooling2D
-from tensorflow.python.keras.models import Model
+from tensorflow.python.keras.models import Model, load_model
 from tensorflow.python.keras.preprocessing.image import ImageDataGenerator
 
 import ray
-from ray.tune import grid_search, run_experiments
-from ray.tune import register_trainable
+from ray.tune import grid_search, run, sample_from
 from ray.tune import Trainable
-from ray.tune import TrainingResult
-from ray.tune.pbt import PopulationBasedTraining
+from ray.tune.schedulers import PopulationBasedTraining
 
 num_classes = 10
+NUM_SAMPLES = 128
 
 
 class Cifar10Model(Trainable):
@@ -100,28 +99,32 @@ class Cifar10Model(Trainable):
         y = MaxPooling2D(pool_size=2, strides=2, padding="same")(y)
 
         y = Flatten()(y)
-        y = Dropout(self.config["dropout"])(y)
+        y = Dropout(self.config.get("dropout", 0.5))(y)
         y = Dense(
             units=10, activation="softmax", kernel_initializer="he_normal")(y)
 
         model = Model(inputs=x, outputs=y, name="model1")
         return model
 
-    def _setup(self):
+    def setup(self, config):
         self.train_data, self.test_data = self._read_data()
         x_train = self.train_data[0]
         model = self._build_model(x_train.shape[1:])
 
-        opt = tf.keras.optimizers.Adadelta()
+        opt = tf.keras.optimizers.Adadelta(
+            lr=self.config.get("lr", 1e-4),
+            decay=self.config.get("decay", 1e-4))
         model.compile(
             loss="categorical_crossentropy",
             optimizer=opt,
             metrics=["accuracy"])
         self.model = model
 
-    def _train(self):
+    def step(self):
         x_train, y_train = self.train_data
+        x_train, y_train = x_train[:NUM_SAMPLES], y_train[:NUM_SAMPLES]
         x_test, y_test = self.test_data
+        x_test, y_test = x_test[:NUM_SAMPLES], y_test[:NUM_SAMPLES]
 
         aug_gen = ImageDataGenerator(
             # set input mean to 0 over the dataset
@@ -147,27 +150,28 @@ class Cifar10Model(Trainable):
         )
 
         aug_gen.fit(x_train)
-        gen = aug_gen.flow(
-            x_train, y_train, batch_size=self.config["batch_size"])
+        batch_size = self.config.get("batch_size", 64)
+        gen = aug_gen.flow(x_train, y_train, batch_size=batch_size)
         self.model.fit_generator(
             generator=gen,
-            steps_per_epoch=50000 // self.config["batch_size"],
-            epochs=self.config["epochs"],
+            epochs=self.config.get("epochs", 1),
             validation_data=None)
 
         # loss, accuracy
         _, accuracy = self.model.evaluate(x_test, y_test, verbose=0)
-        return TrainingResult(timesteps_this_iter=10, mean_accuracy=accuracy)
+        return {"mean_accuracy": accuracy}
 
-    def _save(self, checkpoint_dir):
+    def save_checkpoint(self, checkpoint_dir):
         file_path = checkpoint_dir + "/model"
-        self.model.save_weights(file_path)
+        self.model.save(file_path)
         return file_path
 
-    def _restore(self, path):
-        self.model.load_weights(path)
+    def load_checkpoint(self, path):
+        # See https://stackoverflow.com/a/42763323
+        del self.model
+        self.model = load_model(path)
 
-    def _stop(self):
+    def cleanup(self):
         # If need, save your model when exit.
         # saved_path = self.model.save(self.logdir)
         # print("save model at: ", saved_path)
@@ -180,25 +184,23 @@ if __name__ == "__main__":
         "--smoke-test", action="store_true", help="Finish quickly for testing")
     args, _ = parser.parse_known_args()
 
-    register_trainable("train_cifar10", Cifar10Model)
     train_spec = {
-        "run": "train_cifar10",
-        "trial_resources": {
+        "resources_per_trial": {
             "cpu": 1,
             "gpu": 1
         },
         "stop": {
             "mean_accuracy": 0.80,
-            "timesteps_total": 300,
+            "training_iteration": 30,
         },
         "config": {
             "epochs": 1,
             "batch_size": 64,
             "lr": grid_search([10**-4, 10**-5]),
-            "decay": lambda spec: spec.config.lr / 100.0,
+            "decay": sample_from(lambda spec: spec.config.lr / 100.0),
             "dropout": grid_search([0.25, 0.5]),
         },
-        "repeat": 4,
+        "num_samples": 4,
     }
 
     if args.smoke_test:
@@ -208,11 +210,12 @@ if __name__ == "__main__":
     ray.init()
 
     pbt = PopulationBasedTraining(
-        time_attr="timesteps_total",
-        reward_attr="mean_accuracy",
+        time_attr="training_iteration",
+        metric="mean_accuracy",
+        mode="max",
         perturbation_interval=10,
         hyperparam_mutations={
             "dropout": lambda _: np.random.uniform(0, 1),
         })
 
-    run_experiments({"pbt_cifar10": train_spec}, scheduler=pbt)
+    run(Cifar10Model, name="pbt_cifar10", scheduler=pbt, **train_spec)

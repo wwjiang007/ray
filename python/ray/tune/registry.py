@@ -1,25 +1,49 @@
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+import logging
 from types import FunctionType
 
-import numpy as np
-
 import ray
-from ray.local_scheduler import ObjectID
+import ray.cloudpickle as pickle
+from ray.experimental.internal_kv import _internal_kv_initialized, \
+    _internal_kv_get, _internal_kv_put
+from ray.tune.error import TuneError
 
 TRAINABLE_CLASS = "trainable_class"
 ENV_CREATOR = "env_creator"
 RLLIB_MODEL = "rllib_model"
 RLLIB_PREPROCESSOR = "rllib_preprocessor"
+RLLIB_ACTION_DIST = "rllib_action_dist"
+TEST = "__test__"
 KNOWN_CATEGORIES = [
-    TRAINABLE_CLASS, ENV_CREATOR, RLLIB_MODEL, RLLIB_PREPROCESSOR
+    TRAINABLE_CLASS, ENV_CREATOR, RLLIB_MODEL, RLLIB_PREPROCESSOR,
+    RLLIB_ACTION_DIST, TEST
 ]
 
+logger = logging.getLogger(__name__)
 
-def register_trainable(name, trainable):
+
+def has_trainable(trainable_name):
+    return _global_registry.contains(TRAINABLE_CLASS, trainable_name)
+
+
+def get_trainable_cls(trainable_name):
+    validate_trainable(trainable_name)
+    return _global_registry.get(TRAINABLE_CLASS, trainable_name)
+
+
+def validate_trainable(trainable_name):
+    if not has_trainable(trainable_name):
+        # Make sure everything rllib-related is registered.
+        from ray.rllib import _register_all
+        _register_all()
+        if not has_trainable(trainable_name):
+            raise TuneError("Unknown trainable: " + trainable_name)
+
+
+def register_trainable(name, trainable, warn=True):
     """Register a trainable function or class.
+
+    This enables a class or function to be accessed on every Ray process
+    in the cluster.
 
     Args:
         name (str): Name to register.
@@ -28,18 +52,30 @@ def register_trainable(name, trainable):
             automatically converted into a class during registration.
     """
 
-    from ray.tune.trainable import Trainable, wrap_function
+    from ray.tune.trainable import Trainable
+    from ray.tune.function_runner import wrap_function
 
-    if isinstance(trainable, FunctionType):
-        trainable = wrap_function(trainable)
+    if isinstance(trainable, type):
+        logger.debug("Detected class for trainable.")
+    elif isinstance(trainable, FunctionType):
+        logger.debug("Detected function for trainable.")
+        trainable = wrap_function(trainable, warn=warn)
+    elif callable(trainable):
+        logger.info(
+            "Detected unknown callable for trainable. Converting to class.")
+        trainable = wrap_function(trainable, warn=warn)
+
     if not issubclass(trainable, Trainable):
         raise TypeError("Second argument must be convertable to Trainable",
                         trainable)
-    _default_registry.register(TRAINABLE_CLASS, name, trainable)
+    _global_registry.register(TRAINABLE_CLASS, name, trainable)
 
 
 def register_env(name, env_creator):
     """Register a custom environment for use with RLlib.
+
+    This enables the environment to be accessed on every Ray process
+    in the cluster.
 
     Args:
         name (str): Name to register.
@@ -48,62 +84,92 @@ def register_env(name, env_creator):
 
     if not isinstance(env_creator, FunctionType):
         raise TypeError("Second argument must be a function.", env_creator)
-    _default_registry.register(ENV_CREATOR, name, env_creator)
+    _global_registry.register(ENV_CREATOR, name, env_creator)
 
 
-def get_registry():
-    """Use this to access the registry. This requires ray to be initialized."""
-
-    _default_registry.flush_values_to_object_store()
-
-    # returns a registry copy that doesn't include the hard refs
-    return _Registry(_default_registry._all_objects)
+def check_serializability(key, value):
+    _global_registry.register(TEST, key, value)
 
 
-def _to_pinnable(obj):
-    """Converts obj to a form that can be pinned in object store memory.
+def _make_key(category, key):
+    """Generate a binary key for the given category and key.
 
-    Currently only numpy arrays are pinned in memory, if you have a strong
-    reference to the array value.
+    Args:
+        category (str): The category of the item
+        key (str): The unique identifier for the item
+
+    Returns:
+        The key to use for storing a the value.
     """
-
-    return (obj, np.zeros(1))
-
-
-def _from_pinnable(obj):
-    """Retrieve from _to_pinnable format."""
-
-    return obj[0]
+    return (b"TuneRegistry:" + category.encode("ascii") + b"/" +
+            key.encode("ascii"))
 
 
-class _Registry(object):
-    def __init__(self, objs=None):
-        self._all_objects = {} if objs is None else objs.copy()
-        self._refs = []  # hard refs that prevent eviction of objects
+class _Registry:
+    def __init__(self):
+        self._to_flush = {}
 
     def register(self, category, key, value):
+        """Registers the value with the global registry.
+
+        Raises:
+            PicklingError if unable to pickle to provided file.
+        """
         if category not in KNOWN_CATEGORIES:
             from ray.tune import TuneError
             raise TuneError("Unknown category {} not among {}".format(
                 category, KNOWN_CATEGORIES))
-        self._all_objects[(category, key)] = value
+        self._to_flush[(category, key)] = pickle.dumps(value)
+        if _internal_kv_initialized():
+            self.flush_values()
 
     def contains(self, category, key):
-        return (category, key) in self._all_objects
+        if _internal_kv_initialized():
+            value = _internal_kv_get(_make_key(category, key))
+            return value is not None
+        else:
+            return (category, key) in self._to_flush
 
     def get(self, category, key):
-        value = self._all_objects[(category, key)]
-        if type(value) == ObjectID:
-            return _from_pinnable(ray.get(value))
+        if _internal_kv_initialized():
+            value = _internal_kv_get(_make_key(category, key))
+            if value is None:
+                raise ValueError(
+                    "Registry value for {}/{} doesn't exist.".format(
+                        category, key))
+            return pickle.loads(value)
         else:
-            return value
+            return pickle.loads(self._to_flush[(category, key)])
 
-    def flush_values_to_object_store(self):
-        for k, v in self._all_objects.items():
-            if type(v) != ObjectID:
-                obj = ray.put(_to_pinnable(v))
-                self._all_objects[k] = obj
-                self._refs.append(ray.get(obj))
+    def flush_values(self):
+        for (category, key), value in self._to_flush.items():
+            _internal_kv_put(_make_key(category, key), value, overwrite=True)
+        self._to_flush.clear()
 
 
-_default_registry = _Registry()
+_global_registry = _Registry()
+ray.worker._post_init_hooks.append(_global_registry.flush_values)
+
+
+class _ParameterRegistry:
+    def __init__(self):
+        self.to_flush = {}
+        self.references = {}
+
+    def put(self, k, v):
+        self.to_flush[k] = v
+        if ray.is_initialized():
+            self.flush()
+
+    def get(self, k):
+        if not ray.is_initialized():
+            return self.to_flush[k]
+        return ray.get(self.references[k])
+
+    def flush(self):
+        for k, v in self.to_flush.items():
+            self.references[k] = ray.put(v)
+
+
+parameter_registry = _ParameterRegistry()
+ray.worker._post_init_hooks.append(parameter_registry.flush)

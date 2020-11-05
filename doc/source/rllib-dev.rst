@@ -1,103 +1,79 @@
-RLlib Developer Guide
+Contributing to RLlib
 =====================
 
-.. note::
+Development Install
+-------------------
 
-    This guide will take you through steps for implementing a new algorithm in RLlib. To apply existing algorithms already implemented in RLlib, please see the `user docs <rllib.html>`__.
+You can develop RLlib locally without needing to compile Ray by using the `setup-dev.py <https://github.com/ray-project/ray/blob/master/python/ray/setup-dev.py>`__ script. This sets up links between the ``rllib`` dir in your git repo and the one bundled with the ``ray`` package. However if you have installed ray from source using [these instructions](https://docs.ray.io/en/latest/installation.html) then do not this as these steps should have already created this symlink. When using this script, make sure that your git branch is in sync with the installed Ray binaries (i.e., you are up-to-date on `master <https://github.com/ray-project/ray>`__ and have the latest `wheel <https://docs.ray.io/en/latest/installation.html>`__ installed.)
 
-Recipe for an RLlib algorithm
------------------------------
+API Stability
+-------------
 
-Here are the steps for implementing a new algorithm in RLlib:
+Objects and methods annotated with ``@PublicAPI`` or ``@DeveloperAPI`` have the following API compatibility guarantees:
 
-1. Define an algorithm-specific `Policy evaluator class <#policy-evaluators-and-optimizers>`__ (the core of the algorithm). Evaluators encapsulate framework-specific components such as the policy and loss functions. For an example, see the `simple policy gradient evaluator example <https://github.com/ray-project/ray/blob/master/python/ray/rllib/pg/pg_evaluator.py>`__.
+.. autofunction:: ray.rllib.utils.annotations.PublicAPI
 
+.. autofunction:: ray.rllib.utils.annotations.DeveloperAPI
 
-2. Pick an appropriate `Policy optimizer class <#policy-evaluators-and-optimizers>`__. Optimizers manage the parallel execution of the algorithm. RLlib provides several built-in optimizers for gradient-based algorithms. Advanced algorithms may find it beneficial to implement their own optimizers.
+Features
+--------
 
+Feature development, discussion, and upcoming priorities are tracked on the `GitHub issues page <https://github.com/ray-project/ray/issues>`__ (note that this may not include all development efforts).
 
-3. Wrap the two up in an `Agent class <#agents>`__. Agents are the user-facing API of RLlib. They provide the necessary "glue" and implement accessory functionality such as statistics reporting and checkpointing.
+Benchmarks
+----------
 
-To help with implementation, RLlib provides common action distributions, preprocessors, and neural network models, found in `catalog.py <https://github.com/ray-project/ray/blob/master/python/ray/rllib/models/catalog.py>`__, which are shared by all algorithms. Note that most of these utilities are currently Tensorflow specific.
+A number of training run results are available in the `rl-experiments repo <https://github.com/ray-project/rl-experiments>`__, and there is also a list of working hyperparameter configurations in `tuned_examples <https://github.com/ray-project/ray/tree/master/rllib/tuned_examples>`__, sorted by algorithm. Benchmark results are extremely valuable to the community, so if you happen to have results that may be of interest, consider making a pull request to either repo.
 
-.. image:: rllib-api.svg
+Contributing Algorithms
+-----------------------
 
+These are the guidelines for merging new algorithms into RLlib:
 
-The Developer API
------------------
+* Contributed algorithms (`rllib/contrib <https://github.com/ray-project/ray/tree/master/rllib/contrib>`__):
+    - must subclass Trainer and implement the ``step()`` method
+    - must include a lightweight test (`example <https://github.com/ray-project/ray/blob/6bb110393008c9800177490688c6ed38b2da52a9/test/jenkins_tests/run_multi_node_tests.sh#L45>`__) to ensure the algorithm runs
+    - should include tuned hyperparameter examples and documentation
+    - should offer functionality not present in existing algorithms
 
-The following APIs are the building blocks of RLlib algorithms (also take a look at the `user components overview <rllib.html#components-user-customizable-and-internal>`__).
+* Fully integrated algorithms (`rllib/agents <https://github.com/ray-project/ray/tree/master/rllib/agents>`__) have the following additional requirements:
+    - must fully implement the Trainer API
+    - must offer substantial new functionality not possible to add to other algorithms
+    - should support custom models and preprocessors
+    - should use RLlib abstractions and support distributed execution
 
-Agents
-~~~~~~
+Both integrated and contributed algorithms ship with the ``ray`` PyPI package, and are tested as part of Ray's automated tests. The main difference between contributed and fully integrated algorithms is that the latter will be maintained by the Ray team to a much greater extent with respect to bugs and integration with RLlib features.
 
-Agents implement a particular algorithm and can be used to run
-some number of iterations of the algorithm, save and load the state
-of training and evaluate the current policy. All agents inherit from
-a common base class:
+How to add an algorithm to ``contrib``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+It takes just two changes to add an algorithm to `contrib <https://github.com/ray-project/ray/tree/master/rllib/contrib>`__. A minimal example can be found `here <https://github.com/ray-project/ray/tree/master/rllib/contrib/random_agent/random_agent.py>`__. First, subclass `Trainer <https://github.com/ray-project/ray/tree/master/rllib/agents/agent.py>`__ and implement the ``_init`` and ``step`` methods:
 
-.. autoclass:: ray.rllib.agent.Agent
-    :members:
+.. literalinclude:: ../../rllib/contrib/random_agent/random_agent.py
+   :language: python
+   :start-after: __sphinx_doc_begin__
+   :end-before: __sphinx_doc_end__
 
-Policy Evaluators and Optimizers
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Second, register the trainer with a name in `contrib/registry.py <https://github.com/ray-project/ray/blob/master/rllib/contrib/registry.py>`__.
 
-.. autoclass:: ray.rllib.optimizers.policy_evaluator.PolicyEvaluator
-    :members:
+.. code-block:: python
 
-.. autoclass:: ray.rllib.optimizers.policy_optimizer.PolicyOptimizer
-    :members:
+    def _import_random_agent():
+        from ray.rllib.contrib.random_agent.random_agent import RandomAgent
+        return RandomAgent
 
-Sample Batches
-~~~~~~~~~~~~~~
+    def _import_random_agent_2():
+        from ray.rllib.contrib.random_agent_2.random_agent_2 import RandomAgent2
+        return RandomAgent2
 
-In order for Optimizers to manipulate sample data, they should be returned from Evaluators
-in the SampleBatch format (a wrapper around a dict).
+    CONTRIBUTED_ALGORITHMS = {
+        "contrib/RandomAgent": _import_random_trainer,
+        "contrib/RandomAgent2": _import_random_trainer_2,
+        # ...
+    }
 
-.. autoclass:: ray.rllib.optimizers.SampleBatch
-    :members:
+After registration, you can run and visualize training progress using ``rllib train``:
 
-Models and Preprocessors
-~~~~~~~~~~~~~~~~~~~~~~~~
+.. code-block:: bash
 
-Algorithms share neural network models which inherit from the following class:
-
-.. autoclass:: ray.rllib.models.Model
-    :members:
-
-Currently we support fully connected and convolutional TensorFlow policies on all algorithms:
-
-.. autoclass:: ray.rllib.models.FullyConnectedNetwork
-.. autoclass:: ray.rllib.models.ConvolutionalNetwork
-
-A3C also supports a TensorFlow LSTM policy.
-
-.. autoclass:: ray.rllib.models.LSTM
-
-Observations are transformed by Preprocessors before used in the model:
-
-.. autoclass:: ray.rllib.models.preprocessors.Preprocessor
-    :members:
-
-Action Distributions
-~~~~~~~~~~~~~~~~~~~~
-
-Actions can be sampled from different distributions which have a common base
-class:
-
-.. autoclass:: ray.rllib.models.ActionDistribution
-    :members:
-
-Currently we support the following action distributions:
-
-.. autoclass:: ray.rllib.models.Categorical
-.. autoclass:: ray.rllib.models.DiagGaussian
-.. autoclass:: ray.rllib.models.Deterministic
-
-The Model Catalog
-~~~~~~~~~~~~~~~~~
-
-The Model Catalog is the mechanism for algorithms to get canonical preprocessors, models, and action distributions for varying gym environments. It enables easy reuse of these components across different algorithms.
-
-.. autoclass:: ray.rllib.models.ModelCatalog
-    :members:
+    rllib train --run=contrib/RandomAgent --env=CartPole-v0
+    tensorboard --logdir=~/ray_results

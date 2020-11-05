@@ -1,93 +1,126 @@
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-from collections import namedtuple
 import os
-"""
-When using ray.tune with custom training scripts, you must periodically report
-training status back to Ray by calling reporter(result).
 
-Most of the fields are optional, the only required one is timesteps_total.
+# yapf: disable
+# __sphinx_doc_begin__
+# (Optional/Auto-filled) training is terminated. Filled only if not provided.
+DONE = "done"
 
-In RLlib, the supplied algorithms fill in TrainingResult for you.
-"""
+# (Optional) Enum for user controlled checkpoint
+SHOULD_CHECKPOINT = "should_checkpoint"
 
-# Where ray.tune writes result files by default
-DEFAULT_RESULTS_DIR = os.path.expanduser("~/ray_results")
+# (Auto-filled) The hostname of the machine hosting the training process.
+HOSTNAME = "hostname"
 
-TrainingResult = namedtuple(
-    "TrainingResult",
-    [
-        # (Required) Accumulated timesteps for this entire experiment.
-        "timesteps_total",
+# (Auto-filled) The auto-assigned id of the trial.
+TRIAL_ID = "trial_id"
 
-        # (Optional) If training is terminated.
-        "done",
+# (Auto-filled) The auto-assigned id of the trial.
+EXPERIMENT_TAG = "experiment_tag"
 
-        # (Optional) Custom metadata to report for this iteration.
-        "info",
+# (Auto-filled) The node ip of the machine hosting the training process.
+NODE_IP = "node_ip"
 
-        # (Optional) The mean episode reward if applicable.
-        "episode_reward_mean",
+# (Auto-filled) The pid of the training process.
+PID = "pid"
 
-        # (Optional) The mean episode length if applicable.
-        "episode_len_mean",
+# (Optional) Mean reward for current training iteration
+EPISODE_REWARD_MEAN = "episode_reward_mean"
 
-        # (Optional) The number of episodes total.
-        "episodes_total",
+# (Optional) Mean loss for training iteration
+MEAN_LOSS = "mean_loss"
 
-        # (Optional) The current training accuracy if applicable.
-        "mean_accuracy",
+# (Optional) Mean loss for training iteration
+NEG_MEAN_LOSS = "neg_mean_loss"
 
-        # (Optional) The current validation accuracy if applicable.
-        "mean_validation_accuracy",
+# (Optional) Mean accuracy for training iteration
+MEAN_ACCURACY = "mean_accuracy"
 
-        # (Optional) The current training loss if applicable.
-        "mean_loss",
+# Number of episodes in this iteration.
+EPISODES_THIS_ITER = "episodes_this_iter"
 
-        # (Auto-filled) The negated current training loss.
-        "neg_mean_loss",
+# (Optional/Auto-filled) Accumulated number of episodes for this trial.
+EPISODES_TOTAL = "episodes_total"
 
-        # (Auto-filled) Unique string identifier for this experiment.
-        # This id is preserved across checkpoint / restore calls.
-        "experiment_id",
+# Number of timesteps in this iteration.
+TIMESTEPS_THIS_ITER = "timesteps_this_iter"
 
-        # (Auto-filled) The index of this training iteration,
-        # e.g. call to train().
-        "training_iteration",
+# (Auto-filled) Accumulated number of timesteps for this entire trial.
+TIMESTEPS_TOTAL = "timesteps_total"
 
-        # (Auto-filled) Number of timesteps in the simulator
-        # in this iteration.
-        "timesteps_this_iter",
+# (Auto-filled) Time in seconds this iteration took to run.
+# This may be overridden to override the system-computed time difference.
+TIME_THIS_ITER_S = "time_this_iter_s"
 
-        # (Auto-filled) Time in seconds this iteration took to run. This may
-        # be overriden in order to override the system-computed
-        # time difference.
-        "time_this_iter_s",
+# (Auto-filled) Accumulated time in seconds for this entire trial.
+TIME_TOTAL_S = "time_total_s"
 
-        # (Auto-filled) Accumulated time in seconds for this entire experiment.
-        "time_total_s",
+# (Auto-filled) The index of this training iteration.
+TRAINING_ITERATION = "training_iteration"
+# __sphinx_doc_end__
+# yapf: enable
 
-        # (Auto-filled) The pid of the training process.
-        "pid",
+DEFAULT_EXPERIMENT_INFO_KEYS = ("trainable_name", EXPERIMENT_TAG, TRIAL_ID)
 
-        # (Auto-filled) A formatted date of when the result was processed.
-        "date",
+DEFAULT_RESULT_KEYS = (TRAINING_ITERATION, TIME_TOTAL_S, TIMESTEPS_TOTAL,
+                       MEAN_ACCURACY, MEAN_LOSS)
 
-        # (Auto-filled) A UNIX timestamp of when the result was processed.
-        "timestamp",
+# Make sure this doesn't regress
+AUTO_RESULT_KEYS = (
+    TRAINING_ITERATION,
+    TIME_TOTAL_S,
+    EPISODES_TOTAL,
+    TIMESTEPS_TOTAL,
+    NODE_IP,
+    HOSTNAME,
+    PID,
+    TIME_TOTAL_S,
+    TIME_THIS_ITER_S,
+    "timestamp",
+    "experiment_id",
+    "date",
+    "time_since_restore",
+    "iterations_since_restore",
+    "timesteps_since_restore",
+    "config",
+)
 
-        # (Auto-filled) The hostname of the machine hosting the
-        # training process.
-        "hostname",
+# __duplicate__ is a magic keyword used internally to
+# avoid double-logging results when using the Function API.
+RESULT_DUPLICATE = "__duplicate__"
 
-        # (Auto-filled) The node ip of the machine hosting the
-        # training process.
-        "node_ip",
+# __trial_info__ is a magic keyword used internally to pass trial_info
+# to the Trainable via the constructor.
+TRIAL_INFO = "__trial_info__"
 
-        # (Auto=filled) The current hyperparameter configuration.
-        "config",
-    ])
+# __stdout_file__/__stderr_file__ are magic keywords used internally
+# to pass log file locations to the Trainable via the constructor.
+STDOUT_FILE = "__stdout_file__"
+STDERR_FILE = "__stderr_file__"
 
-TrainingResult.__new__.__defaults__ = (None, ) * len(TrainingResult._fields)
+# Where Tune writes result files by default
+DEFAULT_RESULTS_DIR = (os.environ.get("TEST_TMPDIR")
+                       or os.environ.get("TUNE_RESULT_DIR")
+                       or os.path.expanduser("~/ray_results"))
+
+# Meta file about status under each experiment directory, can be
+# parsed by automlboard if exists.
+JOB_META_FILE = "job_status.json"
+
+# Meta file about status under each trial directory, can be parsed
+# by automlboard if exists.
+EXPR_META_FILE = "trial_status.json"
+
+# File that stores parameters of the trial.
+EXPR_PARAM_FILE = "params.json"
+
+# Pickle File that stores parameters of the trial.
+EXPR_PARAM_PICKLE_FILE = "params.pkl"
+
+# File that stores the progress of the trial.
+EXPR_PROGRESS_FILE = "progress.csv"
+
+# File that stores results of the trial.
+EXPR_RESULT_FILE = "result.json"
+
+# Config prefix when using Analysis.
+CONFIG_PREFIX = "config/"

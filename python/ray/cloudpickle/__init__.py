@@ -1,5 +1,3 @@
-from __future__ import absolute_import
+from ray.cloudpickle.cloudpickle_fast import *  # noqa: F401, F403
 
-from ray.cloudpickle.cloudpickle import *
-
-__version__ = '0.5.2'
+__version__ = '1.4.1'

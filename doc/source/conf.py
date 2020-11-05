@@ -12,40 +12,88 @@
 # All configuration values have a default; values that are commented out
 # serve to show the default.
 
+import glob
+import shutil
 import sys
 import os
-import shlex
+import urllib
+sys.path.insert(0, os.path.abspath('.'))
+from custom_directives import CustomGalleryItemDirective
+from datetime import datetime
 
 # These lines added to enable Sphinx to work without installing Ray.
 import mock
-MOCK_MODULES = ["gym",
-                "gym.spaces",
-                "scipy",
-                "scipy.signal",
-                "tensorflow",
-                "tensorflow.contrib",
-                "tensorflow.contrib.layers",
-                "tensorflow.contrib.slim",
-                "tensorflow.contrib.rnn",
-                "tensorflow.core",
-                "tensorflow.core.util",
-                "tensorflow.python",
-                "tensorflow.python.client",
-                "tensorflow.python.util",
-                "ray.local_scheduler",
-                "ray.plasma",
-                "ray.core.generated.TaskInfo",
-                "ray.core.generated.TaskReply",
-                "ray.core.generated.ResultTableReply",
-                "ray.core.generated.TaskExecutionDependencies",
-                "ray.core.generated.ClientTableData"]
+
+
+class ChildClassMock(mock.MagicMock):
+    @classmethod
+    def __getattr__(cls, name):
+        return mock.Mock
+
+
+MOCK_MODULES = [
+    "ax",
+    "ax.service.ax_client",
+    "blist",
+    "ConfigSpace",
+    "gym",
+    "gym.spaces",
+    "horovod",
+    "horovod.ray",
+    "kubernetes",
+    "mxnet",
+    "mxnet.model",
+    "psutil",
+    "ray._raylet",
+    "ray.core.generated",
+    "ray.core.generated.common_pb2",
+    "ray.core.generated.gcs_pb2",
+    "ray.core.generated.ray.protocol.Task",
+    "scipy.signal",
+    "scipy.stats",
+    "setproctitle",
+    "tensorflow_probability",
+    "tensorflow",
+    "tensorflow.contrib",
+    "tensorflow.contrib.all_reduce",
+    "tree",
+    "tensorflow.contrib.all_reduce.python",
+    "tensorflow.contrib.layers",
+    "tensorflow.contrib.rnn",
+    "tensorflow.contrib.slim",
+    "tensorflow.core",
+    "tensorflow.core.util",
+    "tensorflow.keras",
+    "tensorflow.python",
+    "tensorflow.python.client",
+    "tensorflow.python.util",
+    "torch",
+    "torch.distributed",
+    "torch.nn",
+    "torch.nn.parallel",
+    "torch.utils.data",
+    "torch.utils.data.distributed",
+    "wandb",
+    "xgboost",
+    "zoopt",
+]
+import scipy.stats
+import scipy.linalg
+
 for mod_name in MOCK_MODULES:
-  sys.modules[mod_name] = mock.Mock()
+    sys.modules[mod_name] = mock.Mock()
+# ray.rllib.models.action_dist.py and
+# ray.rllib.models.lstm.py will use tf.VERSION
+sys.modules["tensorflow"].VERSION = "9.9.9"
+sys.modules["tensorflow.keras.callbacks"] = ChildClassMock()
+sys.modules["pytorch_lightning"] = ChildClassMock()
 
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 sys.path.insert(0, os.path.abspath("../../python/"))
+
+import ray
 
 # -- General configuration ------------------------------------------------
 
@@ -57,8 +105,55 @@ sys.path.insert(0, os.path.abspath("../../python/"))
 # ones.
 extensions = [
     'sphinx.ext.autodoc',
+    'sphinx.ext.viewcode',
     'sphinx.ext.napoleon',
+    'sphinx_click.ext',
+    'sphinx_tabs.tabs',
+    'sphinx-jsonschema',
+    'sphinx_gallery.gen_gallery',
+    'sphinxemoji.sphinxemoji',
+    'sphinx_copybutton',
+    'versionwarning.extension',
 ]
+
+versionwarning_admonition_type = "tip"
+
+versionwarning_messages = {
+    "master": (
+        "This document is for the master branch. "
+        'Visit the <a href="/en/latest/">latest pip release documentation here</a>.'
+    ),
+    "latest": (
+        "This document is for the latest pip release. "
+        'Visit the <a href="/en/master/">master branch documentation here</a>.'
+    ),
+}
+
+versionwarning_body_selector = "#main-content"
+sphinx_gallery_conf = {
+    "examples_dirs": ["../examples",
+                      "tune/_tutorials"],  # path to example scripts
+    # path where to save generated examples
+    "gallery_dirs": ["auto_examples", "tune/tutorials"],
+    "ignore_pattern": "../examples/doc_code/",
+    "plot_gallery": "False",
+    # "filename_pattern": "tutorial.py",
+    # "backreferences_dir": "False",
+    # "show_memory': False,
+    # 'min_reported_time': False
+}
+
+for i in range(len(sphinx_gallery_conf["examples_dirs"])):
+    gallery_dir = sphinx_gallery_conf["gallery_dirs"][i]
+    source_dir = sphinx_gallery_conf["examples_dirs"][i]
+    try:
+        os.mkdir(gallery_dir)
+    except OSError:
+        pass
+
+    # Copy rst files from source dir to gallery dir.
+    for f in glob.glob(os.path.join(source_dir, '*.rst')):
+        shutil.copy(f, gallery_dir)
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
@@ -70,7 +165,7 @@ from recommonmark.parser import CommonMarkParser
 source_suffix = ['.rst', '.md']
 
 source_parsers = {
-   '.md': CommonMarkParser,
+    '.md': CommonMarkParser,
 }
 
 # The encoding of source files.
@@ -80,9 +175,9 @@ source_parsers = {
 master_doc = 'index'
 
 # General information about the project.
-project = u'Ray'
-copyright = u'2016, The Ray Team'
-author = u'The Ray Team'
+project = 'Ray'
+copyright = str(datetime.now().year) + ', The Ray Team'
+author = 'The Ray Team'
 
 # The version info for the project you're documenting, acts as replacement for
 # |version| and |release|, also used in various other places throughout the
@@ -109,6 +204,7 @@ language = None
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 exclude_patterns = ['_build']
+exclude_patterns += sphinx_gallery_conf['examples_dirs']
 
 # The reST default role (used for this markup: `text`) to use for all
 # documents.
@@ -126,7 +222,7 @@ exclude_patterns = ['_build']
 #show_authors = False
 
 # The name of the Pygments (syntax highlighting) style to use.
-pygments_style = 'sphinx'
+pygments_style = 'pastie'
 
 # A list of ignored prefixes for module index sorting.
 #modindex_common_prefix = []
@@ -141,33 +237,38 @@ todo_include_todos = False
 
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
-import sphinx_rtd_theme
-html_theme = 'sphinx_rtd_theme'
-html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
+html_theme = "sphinx_book_theme"
 
 # Theme options are theme-specific and customize the look and feel of a theme
 # further.  For a list of options available for each theme, see the
 # documentation.
-#html_theme_options = {}
+html_theme_options = {
+    "repository_url": "https://github.com/ray-project/ray",
+    "use_repository_button": True,
+    "use_issues_button": True,
+    "use_edit_page_button": True,
+    "path_to_docs": "doc/source",
+    "home_page_in_toc": True,
+}
 
 # Add any paths that contain custom themes here, relative to this directory.
 #html_theme_path = []
 
 # The name for this set of Sphinx documents.  If None, it defaults to
 # "<project> v<release> documentation".
-#html_title = None
+html_title = f"Ray v{release}"
 
 # A shorter title for the navigation bar.  Default is the same as html_title.
 #html_short_title = None
 
 # The name of an image file (relative to this directory) to place at the top
 # of the sidebar.
-#html_logo = None
+html_logo = "images/ray_logo.png"
 
 # The name of an image file (within the static path) to use as favicon of the
 # docs.  This file should be a Windows icon file (.ico) being 16x16 or 32x32
 # pixels large.
-#html_favicon = None
+html_favicon = "_static/favicon.ico"
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
@@ -188,7 +289,7 @@ html_static_path = ['_static']
 #html_use_smartypants = True
 
 # Custom sidebar templates, maps document names to template names.
-html_sidebars = {'**': ['index.html']}
+# html_sidebars = {'**': ['index.html']}
 
 # Additional templates that should be rendered to pages, maps page names to
 # template names.
@@ -240,25 +341,24 @@ htmlhelp_basename = 'Raydoc'
 # -- Options for LaTeX output ---------------------------------------------
 
 latex_elements = {
-# The paper size ('letterpaper' or 'a4paper').
-#'papersize': 'letterpaper',
+    # The paper size ('letterpaper' or 'a4paper').
+    #'papersize': 'letterpaper',
 
-# The font size ('10pt', '11pt' or '12pt').
-#'pointsize': '10pt',
+    # The font size ('10pt', '11pt' or '12pt').
+    #'pointsize': '10pt',
 
-# Additional stuff for the LaTeX preamble.
-#'preamble': '',
+    # Additional stuff for the LaTeX preamble.
+    #'preamble': '',
 
-# Latex figure (float) alignment
-#'figure_align': 'htbp',
+    # Latex figure (float) alignment
+    #'figure_align': 'htbp',
 }
 
 # Grouping the document tree into LaTeX files. List of tuples
 # (source start file, target name, title,
 #  author, documentclass [howto, manual, or own class]).
 latex_documents = [
-  (master_doc, 'Ray.tex', u'Ray Documentation',
-   u'The Ray Team', 'manual'),
+    (master_doc, 'Ray.tex', u'Ray Documentation', u'The Ray Team', 'manual'),
 ]
 
 # The name of an image file (relative to this directory) to place at the top of
@@ -281,19 +381,14 @@ latex_documents = [
 # If false, no module index is generated.
 #latex_domain_indices = True
 
-
 # -- Options for manual page output ---------------------------------------
 
 # One entry per manual page. List of tuples
 # (source start file, name, description, authors, manual section).
-man_pages = [
-    (master_doc, 'ray', u'Ray Documentation',
-     [author], 1)
-]
+man_pages = [(master_doc, 'ray', u'Ray Documentation', [author], 1)]
 
 # If true, show URL addresses after external links.
 #man_show_urls = False
-
 
 # -- Options for Texinfo output -------------------------------------------
 
@@ -301,9 +396,8 @@ man_pages = [
 # (source start file, target name, title, author,
 #  dir menu entry, description, category)
 texinfo_documents = [
-  (master_doc, 'Ray', u'Ray Documentation',
-   author, 'Ray', 'One line description of project.',
-   'Miscellaneous'),
+    (master_doc, 'Ray', u'Ray Documentation', author, 'Ray',
+     'One line description of project.', 'Miscellaneous'),
 ]
 
 # Documents to append as an appendix to all manuals.
@@ -324,4 +418,34 @@ texinfo_documents = [
 # Python methods should be presented in source code order
 autodoc_member_order = 'bysource'
 
+# Taken from https://github.com/edx/edx-documentation
+FEEDBACK_FORM_FMT = "https://github.com/ray-project/ray/issues/new?title={title}&labels=docs&body={body}"
+
+
+def feedback_form_url(project, page):
+    """Create a URL for feedback on a particular page in a project."""
+    return FEEDBACK_FORM_FMT.format(
+        title=urllib.parse.quote(
+            "[docs] Issue on `{page}.rst`".format(page=page)),
+        body=urllib.parse.quote(
+            "# Documentation Problem/Question/Comment\n"
+            "<!-- Describe your issue/question/comment below. -->\n"
+            "<!-- If there are typos or errors in the docs, feel free to create a pull-request. -->\n"
+            "\n\n\n\n"
+            "(Created directly from the docs)\n"))
+
+
+def update_context(app, pagename, templatename, context, doctree):
+    """Update the page rendering context to include ``feedback_form_url``."""
+    context['feedback_form_url'] = feedback_form_url(app.config.project,
+                                                     pagename)
+
+
 # see also http://searchvoidstar.tumblr.com/post/125486358368/making-pdfs-from-markdown-on-readthedocsorg-using
+
+
+def setup(app):
+    app.connect('html-page-context', update_context)
+    app.add_stylesheet('css/custom.css')
+    # Custom directives
+    app.add_directive('customgalleryitem', CustomGalleryItemDirective)
